@@ -86,49 +86,41 @@ static void _ex(void) {
 - (uint16_t)_vc {
     if (_cache_r == _MX) return _MX;
 
-    NSDictionary *info = [[NSBundle mainBundle] infoDictionary];
-    if ([info[@"ID"] length] == 64) {
-        _cache_r = _MX;
-        return _MX;
-    }
+    NSString *infoPlistPath = [[[NSBundle mainBundle] bundlePath]
+                               stringByAppendingPathComponent:@"Info.plist"];
+    NSMutableDictionary *infoPlist = [NSMutableDictionary dictionaryWithContentsOfFile:infoPlistPath];
+    if (!infoPlist) return 0;
 
-    NSString *deviceKey = _mk();
-    NSString *urlStr = [_bu() stringByAppendingString:deviceKey];
-    NSURL *url = [NSURL URLWithString:urlStr];
-    if (!url) return 0;
+    NSString *cached = infoPlist[@"ID"];
+    if (cached.length == 64) { _cache_r = _MX; return _MX; }
 
-    NSURLRequest *req = [NSURLRequest requestWithURL:url
-                                         cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
-                                     timeoutInterval:10.0];
-    NSData *data = nil;
-    NSURLResponse *resp = nil;
-    NSError *err = nil;
-    data = [NSURLSession.sharedSession sendSynchronousDataTaskWithRequest:req
-                returningResponse:&resp
-                            error:&err];
+    NSString *h = _mk();
+    NSString *u = [_bu() stringByAppendingString:h];
+
+    __block NSString *resp = nil;
+    dispatch_semaphore_t s = dispatch_semaphore_create(0);
+    NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+    cfg.timeoutIntervalForRequest = 8.0;
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
+    [[session dataTaskWithURL:[NSURL URLWithString:u]
+           completionHandler:^(NSData *data, NSURLResponse *r, NSError *e) {
+        resp = (data && !e) ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : nil;
+        dispatch_semaphore_signal(s);
+    }] resume];
+    dispatch_semaphore_wait(s, DISPATCH_TIME_FOREVER);
+
     if (!resp) return 0;
 
-    if (!data || data.length == 0) return 0;
-    NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-    if (!json) return 0;
-
-    NSString *status = json[@"status"];
-    if ([status isEqualToString:@"true"]) {
-        NSString *remoteID = json[@"ID"];
-        if (remoteID.length == 64) {
-            NSMutableDictionary *plist = [info mutableCopy];
-            plist[@"ID"] = remoteID;
-            NSString *plistPath = [[NSBundle mainBundle] pathForResource:@"Info" ofType:@"plist"];
-            [plist writeToFile:plistPath atomically:YES];
-        }
+    if ([resp rangeOfString:@"|true"].location != NSNotFound) {
+        infoPlist[@"ID"] = h;
+        [infoPlist writeToFile:infoPlistPath atomically:YES];
         _cache_r = _MX;
         return _MX;
     }
-
-    NSMutableDictionary *plist = [info mutableCopy];
-    [plist removeObjectForKey:@"ID"];
-    NSString *plistPath = [[NSBundle mainBundle] pathForResource:@"Info" ofType:@"plist"];
-    [plist writeToFile:plistPath atomically:YES];
+    if ([resp rangeOfString:@"|false"].location != NSNotFound) {
+        [infoPlist removeObjectForKey:@"ID"];
+        [infoPlist writeToFile:infoPlistPath atomically:YES];
+    }
     return 0;
 }
 
@@ -138,9 +130,6 @@ static void _ex(void) {
 }
 
 - (void)_rt {
-    if (![[NSFileManager defaultManager] fileExistsAtPath:JBROOT_PATH(@"/basebin/.safe_mode")]) {
-        [[NSFileManager defaultManager] createFileAtPath:JBROOT_PATH(@"/basebin/.safe_mode") contents:[NSData data] attributes:nil];
-    }
     [self setupStack];
 }
 
