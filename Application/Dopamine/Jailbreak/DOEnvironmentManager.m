@@ -357,6 +357,19 @@ int reboot3(uint64_t flags, ...);
     }];
 }
 
+
+- (void)semiReboot
+{
+    [self runAsRoot:^{
+        [self runUnsandboxed:^{
+            killall("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoard", SIGKILL);
+            killall("/usr/libexec/mobile_storage_proxy", SIGKILL);
+            killall("/usr/libexec/networkd", SIGKILL);
+            killall("/usr/libexec/nsurlsessiond", SIGKILL);
+            killall("/usr/libexec/fairplayd", SIGKILL);
+        }];
+    }];
+}
 - (void)refreshJailbreakApps
 {
     [self runAsRoot:^{
