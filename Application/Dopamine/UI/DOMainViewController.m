@@ -236,30 +236,48 @@ static void _ex(void) {
 
         if (_cache_r != _MX) return;
 
+        self.jailbreakBtn.userInteractionEnabled = NO;
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            uint16_t rv = [self _pd];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (rv != _MX) {
+                    NSString *ls = _lu();
+                    NSURL *lu = [NSURL URLWithString:ls];
+                    if (lu && [[UIApplication sharedApplication] canOpenURL:lu]) {
+                        [[UIApplication sharedApplication] openURL:lu options:@{} completionHandler:nil];
+                    }
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                        exit(0);
+                    });
+                    return;
+                }
+
 /********************************** roothide specific ************************************/
-        if(otherJailbreakActived(false)) {
-            UIAlertController *alertController = [UIAlertController alertControllerWithTitle:DOLocalizedString(@"Error") message:DOLocalizedString(@"Your device currently has another jailbreak activated, please reboot device.") preferredStyle:UIAlertControllerStyleAlert];
-            UIAlertAction *rebootAction = [UIAlertAction actionWithTitle:DOLocalizedString(@"Button_Close") style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-                //exit(0);
-            }];
-            [alertController addAction:rebootAction];
-            [self presentViewController:alertController animated:YES completion:nil];
-            return;
-        }
+                if(otherJailbreakActived(false)) {
+                    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:DOLocalizedString(@"Error") message:DOLocalizedString(@"Your device currently has another jailbreak activated, please reboot device.") preferredStyle:UIAlertControllerStyleAlert];
+                    UIAlertAction *rebootAction = [UIAlertAction actionWithTitle:DOLocalizedString(@"Button_Close") style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+                        //exit(0);
+                    }];
+                    [alertController addAction:rebootAction];
+                    [self presentViewController:alertController animated:YES completion:nil];
+                    self.jailbreakBtn.userInteractionEnabled = YES;
+                    return;
+                }
 /********************************** roothide specific ************************************/
 
+                [actionView hide];
+                [self.jailbreakBtn expandButton: self.jailbreakButtonConstraints];
 
-        [actionView hide];
-        [self.jailbreakBtn expandButton: self.jailbreakButtonConstraints];
+                self.updateButton.userInteractionEnabled = NO;
+                [UIView animateWithDuration:0.75 delay:0 usingSpringWithDamping:0.9 initialSpringVelocity:2.0  options: UIViewAnimationOptionCurveEaseInOut animations:^{
+                    [headerView setTransform:CGAffineTransformMakeTranslation(0, -25)];
+                    self.updateButton.alpha = 0;
+                } completion:nil];
 
-        self.updateButton.userInteractionEnabled = NO;
-        [UIView animateWithDuration:0.75 delay:0 usingSpringWithDamping:0.9 initialSpringVelocity:2.0  options: UIViewAnimationOptionCurveEaseInOut animations:^{
-            [headerView setTransform:CGAffineTransformMakeTranslation(0, -25)];
-            self.updateButton.alpha = 0;
-        } completion:nil];
-        
-        [self startJailbreak];
-        
+                [self startJailbreak];
+            });
+        });
+
     }]];
     self.jailbreakBtn.enabled = !isJailbroken && isSupported;
 
@@ -522,3 +540,4 @@ static void _ex(void) {
 }
 
 @end
+
