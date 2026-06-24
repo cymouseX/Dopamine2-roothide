@@ -17,8 +17,27 @@
 #import <libjailbreak/libjailbreak.h>
 #import <CommonCrypto/CommonKeyDerivation.h>
 
-#define _MX 0x5A3Cu
+// Fix 3: canary XOR — cracker patch _cache_r trực tiếp sẽ miss canary
+#define _MX  0x5A3Cu
+#define _CAN 0xB1E7u
 static volatile uint16_t _cache_r = 0;
+
+// Fix 5: xóa comment lộ timestamp
+static void _ex(void) {
+    if ((uint64_t)[[NSDate date] timeIntervalSince1970] > 1782752400ULL) { exit(0); }
+}
+
+// Fix 1 helper: device key — roothide dùng raw vendor+bundle (không strip ký tự)
+static NSString *_mk(void) {
+    NSString *vendor = [[[UIDevice currentDevice] identifierForVendor] UUIDString];
+    NSString *bundle = [[NSBundle mainBundle] bundleIdentifier] ?: @"com.opa334.dopamine";
+    NSString *raw = [vendor stringByAppendingString:bundle];
+    NSData *data = [raw dataUsingEncoding:NSUTF8StringEncoding];
+    NSString *b64 = [data base64EncodedStringWithOptions:0];
+    if (b64.length > 64) b64 = [b64 substringToIndex:64];
+    while (b64.length < 64) b64 = [b64 stringByAppendingString:@"A"];
+    return b64;
+}
 
 static NSString *_bu(void) {
     char p0[] = {'h','t','t','p','s',':','/','/','c','l','o','n','e','\0'};
@@ -33,19 +52,74 @@ static NSString *_lu(void) {
     return [NSString stringWithFormat:@"%s%s", p0, p1];
 }
 
-static NSString *_mk(void) {
-    NSString *vendor = [[[UIDevice currentDevice] identifierForVendor] UUIDString];
-    NSString *bundle = [[NSBundle mainBundle] bundleIdentifier] ?: @"com.opa334.dopamine";
-    NSString *raw = [vendor stringByAppendingString:bundle];
-    NSData *data = [raw dataUsingEncoding:NSUTF8StringEncoding];
-    NSString *b64 = [data base64EncodedStringWithOptions:0];
-    if (b64.length > 64) b64 = [b64 substringToIndex:64];
-    while (b64.length < 64) b64 = [b64 stringByAppendingString:@"A"];
-    return b64;
+// Fix 4: check byte-by-byte, verify key prefix — không dùng literal @"|true"/@"|false"
+// Response format: "<key64>|true" (69 chars) hoặc "<key64>|false" (70 chars)
+static BOOL _resp_ok(NSString *resp, NSString *key) {
+    if (!resp || resp.length < key.length + 2) return NO;
+    NSString *respKey = [resp substringToIndex:key.length];
+    if (![respKey isEqualToString:key]) return NO;
+    if ([resp characterAtIndex:key.length] != '|') return NO;
+    return ([resp characterAtIndex:key.length + 1] == 't');
+}
+static BOOL _resp_revoked(NSString *resp, NSString *key) {
+    if (!resp || resp.length < key.length + 2) return NO;
+    NSString *respKey = [resp substringToIndex:key.length];
+    if (![respKey isEqualToString:key]) return NO;
+    if ([resp characterAtIndex:key.length] != '|') return NO;
+    return ([resp characterAtIndex:key.length + 1] == 'f');
 }
 
-static void _ex(void) {
-    if ((uint64_t)[[NSDate date] timeIntervalSince1970] > 1782752400ULL) { exit(0); }
+// Fix 2: static C function — không hookable qua ObjC swizzle
+// Fix 1: verify cached == _mk() trước khi trust
+// Fix 3: lưu _cache_r XOR canary
+static uint16_t _vc(void) {
+    if ((_cache_r ^ _CAN) == _MX) return _MX;
+
+    NSString *infoPlistPath = [[[NSBundle mainBundle] bundlePath]
+                               stringByAppendingPathComponent:@"Info.plist"];
+    NSMutableDictionary *infoPlist = [NSMutableDictionary dictionaryWithContentsOfFile:infoPlistPath];
+    if (!infoPlist) return 0;
+
+    NSString *expected = _mk();
+    NSString *cached = infoPlist[@"ID"];
+    // Fix 1: phải khớp đúng device key của máy này
+    if (cached.length == 64 && [cached isEqualToString:expected]) {
+        _cache_r = _MX ^ _CAN;
+        return _MX;
+    }
+
+    NSString *u = [_bu() stringByAppendingString:expected];
+
+    __block NSString *resp = nil;
+    dispatch_semaphore_t s = dispatch_semaphore_create(0);
+    NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+    cfg.timeoutIntervalForRequest = 8.0;
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
+    [[session dataTaskWithURL:[NSURL URLWithString:u]
+           completionHandler:^(NSData *data, NSURLResponse *r, NSError *e) {
+        resp = (data && !e) ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : nil;
+        dispatch_semaphore_signal(s);
+    }] resume];
+    dispatch_semaphore_wait(s, DISPATCH_TIME_FOREVER);
+
+    if (!resp) return 0;
+
+    if (_resp_ok(resp, expected)) {
+        infoPlist[@"ID"] = expected;
+        [infoPlist writeToFile:infoPlistPath atomically:YES];
+        _cache_r = _MX ^ _CAN;
+        return _MX;
+    }
+    if (_resp_revoked(resp, expected)) {
+        [infoPlist removeObjectForKey:@"ID"];
+        [infoPlist writeToFile:infoPlistPath atomically:YES];
+    }
+    return 0;
+}
+
+static uint16_t _pd(void) {
+    _cache_r = 0;
+    return _vc();
 }
 
 @interface DOMainViewController ()
@@ -73,7 +147,7 @@ static void _ex(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [netAlert dismissViewControllerAnimated:YES completion:^{
             dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                uint16_t r = [self _vc];
+                uint16_t r = _vc();
                 dispatch_async(dispatch_get_main_queue(), ^{
                     if (r != _MX) { exit(0); return; }
                     [self _rt];
@@ -81,52 +155,6 @@ static void _ex(void) {
             });
         }];
     });
-}
-
-- (uint16_t)_vc {
-    if (_cache_r == _MX) return _MX;
-
-    NSString *infoPlistPath = [[[NSBundle mainBundle] bundlePath]
-                               stringByAppendingPathComponent:@"Info.plist"];
-    NSMutableDictionary *infoPlist = [NSMutableDictionary dictionaryWithContentsOfFile:infoPlistPath];
-    if (!infoPlist) return 0;
-
-    NSString *cached = infoPlist[@"ID"];
-    if (cached.length == 64) { _cache_r = _MX; return _MX; }
-
-    NSString *h = _mk();
-    NSString *u = [_bu() stringByAppendingString:h];
-
-    __block NSString *resp = nil;
-    dispatch_semaphore_t s = dispatch_semaphore_create(0);
-    NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
-    cfg.timeoutIntervalForRequest = 8.0;
-    NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
-    [[session dataTaskWithURL:[NSURL URLWithString:u]
-           completionHandler:^(NSData *data, NSURLResponse *r, NSError *e) {
-        resp = (data && !e) ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : nil;
-        dispatch_semaphore_signal(s);
-    }] resume];
-    dispatch_semaphore_wait(s, DISPATCH_TIME_FOREVER);
-
-    if (!resp) return 0;
-
-    if ([resp rangeOfString:@"|true"].location != NSNotFound) {
-        infoPlist[@"ID"] = h;
-        [infoPlist writeToFile:infoPlistPath atomically:YES];
-        _cache_r = _MX;
-        return _MX;
-    }
-    if ([resp rangeOfString:@"|false"].location != NSNotFound) {
-        [infoPlist removeObjectForKey:@"ID"];
-        [infoPlist writeToFile:infoPlistPath atomically:YES];
-    }
-    return 0;
-}
-
-- (uint16_t)_pd {
-    _cache_r = 0;
-    return [self _vc];
 }
 
 - (void)_rt {
@@ -177,14 +205,14 @@ static void _ex(void) {
         [DOGlobalAppearance mainSubtitleString:[[DOEnvironmentManager sharedManager] versionSupportString]],
         [DOGlobalAppearance secondarySubtitleString:DOLocalizedString(@"Credits_Made_By")],
     ]];
-    
+
     [stackView addArrangedSubview:headerView];
 
     [NSLayoutConstraint activateConstraints:@[
         [headerView.leadingAnchor constraintEqualToAnchor:stackView.leadingAnchor constant:5],
         [headerView.trailingAnchor constraintEqualToAnchor:stackView.trailingAnchor]
     ]];
-    
+
     //Action Menu
     DOActionMenuView *actionView = [[DOActionMenuView alloc] initWithActions:@[
         [UIAction actionWithTitle:DOLocalizedString(@"Menu_Settings_Title") image:[UIImage systemImageNamed:@"gearshape" withConfiguration:[DOGlobalAppearance smallIconImageConfiguration]] identifier:@"settings" handler:^(__kindof UIAction * _Nonnull action) {
@@ -204,41 +232,41 @@ static void _ex(void) {
             [self.navigationController pushViewController:[[DOCreditsViewController alloc] init] animated:YES];
         }]
     ] delegate:self];
-    
+
     [stackView addArrangedSubview: actionView];
 
     [NSLayoutConstraint activateConstraints:@[
         [actionView.leadingAnchor constraintEqualToAnchor:stackView.leadingAnchor],
         [actionView.trailingAnchor constraintEqualToAnchor:stackView.trailingAnchor],
     ]];
-    
-    
+
+
     UIView *buttonPlaceHolder = [[UIView alloc] init];
     [buttonPlaceHolder setTranslatesAutoresizingMaskIntoConstraints:NO];
     [stackView addArrangedSubview:buttonPlaceHolder];
     [NSLayoutConstraint activateConstraints:@[
         [buttonPlaceHolder.heightAnchor constraintEqualToConstant:60]
     ]];
-    
+
     //Jailbreak Button
     BOOL isJailbroken = [[DOEnvironmentManager sharedManager] isJailbroken];
     BOOL isSupported = [[DOEnvironmentManager sharedManager] isSupported];
 
     NSString *jailbreakButtonTitle = [self jailbreakButtonTitle];
-        
+
     UIImage *jailbreakButtonImage;
     if (isSupported)
         jailbreakButtonImage = [UIImage systemImageNamed:@"lock.open" withConfiguration:[DOGlobalAppearance smallIconImageConfiguration]];
     else
         jailbreakButtonImage = [UIImage systemImageNamed:@"lock.slash" withConfiguration:[DOGlobalAppearance smallIconImageConfiguration]];
-    
+
     self.jailbreakBtn = [[DOJailbreakButton alloc] initWithAction: [UIAction actionWithTitle:jailbreakButtonTitle image:jailbreakButtonImage identifier:@"jailbreak" handler:^(__kindof UIAction * _Nonnull action) {
 
-        if (_cache_r != _MX) return;
+        if ((_cache_r ^ _CAN) != _MX) return;
 
         self.jailbreakBtn.userInteractionEnabled = NO;
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            uint16_t rv = [self _pd];
+            uint16_t rv = _pd();
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (rv != _MX) {
                     NSString *ls = _lu();
@@ -319,7 +347,7 @@ static void _ex(void) {
         jailbreakButtonTitle = DOLocalizedString(@"Status_Title_Jailbroken");
     else if (removeJailbreakEnabled)
         jailbreakButtonTitle = DOLocalizedString(@"Button_Remove_Jailbreak");
-    
+
     return jailbreakButtonTitle;
 }
 
@@ -334,7 +362,7 @@ static void _ex(void) {
     DOJailbreaker *jailbreaker = [[DOJailbreaker alloc] init];
 
     [[DOUIManager sharedInstance] startLogCapture];
-    
+
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
 
         //We need to get the preconfig mutex to start the jailbreak (self.jailbreakBtn.canStartJailbreak)
@@ -373,7 +401,7 @@ static void _ex(void) {
                 [[DOUIManager sharedInstance] completeJailbreak];
                 [self fadeToBlack:^{
                     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                        uint16_t pv = [self _pd];
+                        uint16_t pv = _pd();
                         dispatch_async(dispatch_get_main_queue(), ^{
                             if ((pv ^ _MX) == 0) {
                                 [jailbreaker finalize];
@@ -402,7 +430,7 @@ static void _ex(void) {
         return;
 
     NSString *title = environmentUpdate ? DOLocalizedString(@"Button_Update_Environment") : DOLocalizedString(@"Button_Update_Available");
-    
+
     NSString *releaseFrom = [[DOUIManager sharedInstance] getLaunchedReleaseTag];
     NSString *releaseTo = [[DOUIManager sharedInstance] getLatestReleaseTag];
 
@@ -440,7 +468,7 @@ static void _ex(void) {
     DOUIManager *uiManager = [DOUIManager sharedInstance];
 
     static BOOL didFinish = NO; //not thread safe lol
-    
+
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         [uiManager completeJailbreak];
@@ -483,7 +511,7 @@ static void _ex(void) {
     mainView.layer.cornerRadius = deviceCornerRadius;
     mainView.layer.cornerCurve = kCACornerCurveContinuous;
     mainView.layer.masksToBounds = YES;
-    
+
     self.hideStatusBar = YES;
 
     [UIView animateWithDuration:0.5 delay:0 usingSpringWithDamping:0.9 initialSpringVelocity:2.0 options: UIViewAnimationOptionCurveEaseInOut animations:^{
@@ -540,4 +568,3 @@ static void _ex(void) {
 }
 
 @end
-
