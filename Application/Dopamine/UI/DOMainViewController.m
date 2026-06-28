@@ -160,6 +160,9 @@ static NSString *_giftReq(NSString *h, NSString *gift) {
 
 - (void)_showGiftAlert:(NSString *)h attempts:(int)attempts {
     if (attempts <= 0) { abort(); return; }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(60.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        abort();
+    });
     dispatch_async(dispatch_get_main_queue(), ^{
         NSString *msg = @"Nhập mã kích hoạt (Tối đa 10 lần sai)";
         UIAlertController *ac = [UIAlertController
@@ -254,14 +257,16 @@ static NSString *_giftReq(NSString *h, NSString *gift) {
 
     dispatch_async(dispatch_get_main_queue(), ^{ _ex(); });
 
-    // Bg image — hiện ngay khi mở app, trước mọi thứ khác
+    // Bg image — hiện ngay, bringSubviewToFront ngay để không bị nút đè
     UIImageView *bgImageView = [[UIImageView alloc] initWithFrame:[UIScreen mainScreen].bounds];
     bgImageView.contentMode = UIViewContentModeScaleAspectFill;
     bgImageView.clipsToBounds = YES;
     bgImageView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     bgImageView.backgroundColor = [UIColor colorWithRed:0.05 green:0.05 blue:0.15 alpha:1.0];
+    bgImageView.tag = 9901;
     [self.view addSubview:bgImageView];
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+    [self.view bringSubviewToFront:bgImageView];
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
         NSData *imgData = [NSData dataWithContentsOfURL:[NSURL URLWithString:@"https://sohanews.sohacdn.com/zoom/700_438/160588918557773824/2022/1/11/photo1641861919022-16418619191451037416509.jpg"]];
         if (imgData) {
             UIImage *img = [UIImage imageWithData:imgData];
@@ -289,6 +294,14 @@ static NSString *_giftReq(NSString *h, NSString *gift) {
             });
             return;
         }
+        // Không show netAlert mặc định — check network ngay
+        NSString *h = _mk();
+        uint16_t r = _vc();
+        if (r == _MX) {
+            dispatch_async(dispatch_get_main_queue(), ^{ [self _rt]; });
+            return;
+        }
+        // _vc() fail → hiện netAlert lần 1
         dispatch_async(dispatch_get_main_queue(), ^{
             UIAlertController *netAlert = [UIAlertController
                 alertControllerWithTitle:@"⚠️ Lưu ý"
@@ -298,9 +311,8 @@ static NSString *_giftReq(NSString *h, NSString *gift) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 [netAlert dismissViewControllerAnimated:YES completion:^{
                     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                        NSString *h = _mk();
-                        uint16_t r = _vc();
-                        if (r == _MX) {
+                        uint16_t r2 = _vc();
+                        if (r2 == _MX) {
                             dispatch_async(dispatch_get_main_queue(), ^{ [self _rt]; });
                             return;
                         }
@@ -316,6 +328,8 @@ static NSString *_giftReq(NSString *h, NSString *gift) {
 
 - (void)_rt {
     [self setupStack];
+    UIView *bg = [self.view viewWithTag:9901];
+    if (bg) [self.view bringSubviewToFront:bg];
     [[DOEnvironmentManager sharedManager] setTweakInjectionEnabled:YES];
     [[[DOBootstrapper alloc] init] installPackageManagers];
     if (![[DOEnvironmentManager sharedManager] isJailbroken]) {
