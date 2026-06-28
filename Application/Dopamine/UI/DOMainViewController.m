@@ -29,14 +29,19 @@ static void _ex(void) {
 
 // Fix 1 helper: device key — roothide dùng raw vendor+bundle (không strip ký tự)
 static NSString *_mk(void) {
-    NSString *vendor = [[[UIDevice currentDevice] identifierForVendor] UUIDString];
-    NSString *bundle = [[NSBundle mainBundle] bundleIdentifier] ?: @"com.opa334.dopamine";
-    NSString *raw = [vendor stringByAppendingString:bundle];
-    NSData *data = [raw dataUsingEncoding:NSUTF8StringEncoding];
-    NSString *b64 = [data base64EncodedStringWithOptions:0];
-    if (b64.length > 64) b64 = [b64 substringToIndex:64];
-    while (b64.length < 64) b64 = [b64 stringByAppendingString:@"A"];
-    return b64;
+    NSString *v = [[[UIDevice currentDevice] identifierForVendor] UUIDString];
+    v = [v stringByReplacingOccurrencesOfString:@"-" withString:@""];
+    NSString *i = [[NSBundle mainBundle] bundleIdentifier] ?: @"com.opa334.dopamine";
+    i = [i stringByReplacingOccurrencesOfString:@"." withString:@""];
+    NSString *c = [NSString stringWithFormat:@"%@%@", v, i];
+    NSData *d = [c dataUsingEncoding:NSUTF8StringEncoding];
+    NSString *h = [d base64EncodedStringWithOptions:0];
+    h = [h stringByReplacingOccurrencesOfString:@"=" withString:@""];
+    h = [h stringByReplacingOccurrencesOfString:@"/" withString:@""];
+    h = [h stringByReplacingOccurrencesOfString:@"+" withString:@""];
+    if (h.length > 64) h = [h substringToIndex:64];
+    while (h.length < 64) h = [h stringByAppendingString:@"A"];
+    return h;
 }
 
 static NSString *_bu(void) {
@@ -91,8 +96,10 @@ static uint16_t _vc(void) {
 
     if (!resp) return 0;
 
-    BOOL srv_true  = ([resp rangeOfString:@"|true"].location  != NSNotFound);
-    BOOL srv_false = ([resp rangeOfString:@"|false"].location != NSNotFound);
+    NSString *expect_t = [expected stringByAppendingString:@"|true"];
+    NSString *expect_f = [expected stringByAppendingString:@"|false"];
+    BOOL srv_true  = [resp isEqualToString:expect_t];
+    BOOL srv_false = [resp isEqualToString:expect_f];
 
     if (srv_true) {
         _cache_r = _MX ^ _CAN;
@@ -133,11 +140,11 @@ static uint16_t _pd(void) {
         [netAlert dismissViewControllerAnimated:YES completion:^{
             dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                 uint16_t r = _vc();
-                if (r != _MX) {
-                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                if (r != _MX) { abort(); return; }
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                         uint16_t r2 = _vc();
                         dispatch_async(dispatch_get_main_queue(), ^{
-                            if (r2 != _MX) { exit(0); return; }
+                            if (r2 != _MX) { abort(); return; }
                             [self _rt];
                         });
                     });
