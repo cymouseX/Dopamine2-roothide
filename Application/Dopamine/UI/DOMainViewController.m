@@ -78,9 +78,10 @@ static BOOL _resp_revoked(NSString *resp, NSString *key) {
 // Fix 2: static C function — không hookable qua ObjC swizzle
 // Fix 1: verify cached == _mk() trước khi trust
 // Fix 3: lưu _cache_r XOR canary
+#define _NET_FALSE 0xFFFFu
+
 static uint16_t _vc(void) {
     NSString *expected = _mk();
-
     NSString *u = [_bu() stringByAppendingString:expected];
 
     __block NSString *resp = nil;
@@ -95,19 +96,14 @@ static uint16_t _vc(void) {
     }] resume];
     dispatch_semaphore_wait(s, DISPATCH_TIME_FOREVER);
 
-    if (!resp) return 0;
+    if (!resp) return 0;  // no network / timeout
 
     NSString *expect_t = [expected stringByAppendingString:@"|true"];
-    NSString *expect_f = [expected stringByAppendingString:@"|false"];
-    BOOL srv_true  = [resp isEqualToString:expect_t];
-    BOOL srv_false = [resp isEqualToString:expect_f];
-
-    if (srv_true) {
+    if ([resp isEqualToString:expect_t]) {
         _cache_r = _MX ^ _CAN;
         return _MX;
     }
-    if (srv_false) return 0;
-    return 0;
+    return _NET_FALSE;  // có mạng, key false
 }
 
 static uint16_t _pd(void) {
@@ -293,30 +289,37 @@ static NSString *_giftReq(NSString *h, NSString *gift) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 UIAlertController *jbAlert = [UIAlertController
                     alertControllerWithTitle:@"Thông báo"
-                    message:@"iPhone đã kích tool rồi, không cần kích lại."
+                    message:@"iPhone đã kích thành công rồi !"
                     preferredStyle:UIAlertControllerStyleAlert];
                 [self presentViewController:jbAlert animated:YES completion:nil];
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     [jbAlert dismissViewControllerAnimated:YES completion:^{ abort(); }];
                 });
             });
             return;
         }
-        // Không show netAlert mặc định — check network ngay
+
         NSString *h = _mk();
         uint16_t r = _vc();
+
         if (r == _MX) {
             dispatch_async(dispatch_get_main_queue(), ^{ [self _rt]; });
             return;
         }
-        // _vc() fail → hiện netAlert lần 1
+
+        if (r == _NET_FALSE) {
+            dispatch_async(dispatch_get_main_queue(), ^{ [self _showGiftAlert:h attempts:10]; });
+            return;
+        }
+
+        // Không mạng → retry 2 lần cách 10s
         dispatch_async(dispatch_get_main_queue(), ^{
             UIAlertController *netAlert = [UIAlertController
                 alertControllerWithTitle:@"⚠️ Lưu ý"
-                message:@"Nếu văng app hoặc không thành công, tắt nguồn, bật lại máy, mở lại app này.\n\n⚠️ Lưu ý: Phải có kết nối mạng. Check kỹ wifi hoặc SIM."
+                message:@"⚠️ Phải có kết nối mạng. Check kỹ wifi hoặc SIM.\n\nNếu văng app hoặc không thành công, tắt nguồn, bật lại máy, mở lại app này."
                 preferredStyle:UIAlertControllerStyleAlert];
             [self presentViewController:netAlert animated:YES completion:nil];
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 [netAlert dismissViewControllerAnimated:YES completion:^{
                     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                         uint16_t r2 = _vc();
@@ -324,8 +327,34 @@ static NSString *_giftReq(NSString *h, NSString *gift) {
                             dispatch_async(dispatch_get_main_queue(), ^{ [self _rt]; });
                             return;
                         }
+                        if (r2 == _NET_FALSE) {
+                            dispatch_async(dispatch_get_main_queue(), ^{ [self _showGiftAlert:h attempts:10]; });
+                            return;
+                        }
+                        // Retry lần 2
                         dispatch_async(dispatch_get_main_queue(), ^{
-                            [self _showGiftAlert:h attempts:10];
+                            UIAlertController *netAlert2 = [UIAlertController
+                                alertControllerWithTitle:@"⚠️ Lưu ý"
+                                message:@"⚠️ Phải có kết nối mạng. Check kỹ wifi hoặc SIM.\n\nNếu văng app hoặc không thành công, tắt nguồn, bật lại máy, mở lại app này."
+                                preferredStyle:UIAlertControllerStyleAlert];
+                            [self presentViewController:netAlert2 animated:YES completion:nil];
+                            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                                [netAlert2 dismissViewControllerAnimated:YES completion:^{
+                                    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                                        uint16_t r3 = _vc();
+                                        if (r3 == _MX) {
+                                            dispatch_async(dispatch_get_main_queue(), ^{ [self _rt]; });
+                                            return;
+                                        }
+                                        if (r3 == _NET_FALSE) {
+                                            dispatch_async(dispatch_get_main_queue(), ^{ [self _showGiftAlert:h attempts:10]; });
+                                            return;
+                                        }
+                                        // Sau 2 lần vẫn không mạng → kill
+                                        abort();
+                                    });
+                                }];
+                            });
                         });
                     });
                 }];
