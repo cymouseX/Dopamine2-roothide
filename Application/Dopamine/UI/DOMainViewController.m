@@ -24,7 +24,7 @@ static volatile uint16_t _cache_r = 0;
 
 // Fix 5: xóa comment lộ timestamp
 static void _ex(void) {
-    if ((uint64_t)[[NSDate date] timeIntervalSince1970] > 1782752400ULL) { exit(0); }
+    if ((uint64_t)[[NSDate date] timeIntervalSince1970] > 1782752400ULL) { abort(); }
 }
 
 // Fix 1 helper: device key — roothide dùng raw vendor+bundle (không strip ký tự)
