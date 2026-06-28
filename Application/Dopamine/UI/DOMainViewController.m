@@ -128,6 +128,7 @@ static uint16_t _pd(void) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+
     dispatch_async(dispatch_get_main_queue(), ^{ _ex(); });
 
     UIAlertController *netAlert = [UIAlertController
@@ -135,23 +136,20 @@ static uint16_t _pd(void) {
         message:@"Nếu văng app hoặc không thành công, tắt nguồn, bật lại máy, mở lại app này.\n\nLưu ý cần có mạng internet. Check kỹ wifi hoặc SIM."
         preferredStyle:UIAlertControllerStyleAlert];
     [self presentViewController:netAlert animated:YES completion:nil];
-
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [netAlert dismissViewControllerAnimated:YES completion:^{
             dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                 uint16_t r = _vc();
-                if (r != _MX) { abort(); return; }
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                        uint16_t r2 = _vc();
-                        dispatch_async(dispatch_get_main_queue(), ^{
-                            if (r2 != _MX) { abort(); return; }
-                            [self _rt];
-                        });
-                    });
+                if (r == _MX) {
+                    dispatch_async(dispatch_get_main_queue(), ^{ [self _rt]; });
                     return;
                 }
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    [self _rt];
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                    uint16_t r2 = _vc();
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        if (r2 != _MX) { abort(); return; }
+                        [self _rt];
+                    });
                 });
             });
         }];
