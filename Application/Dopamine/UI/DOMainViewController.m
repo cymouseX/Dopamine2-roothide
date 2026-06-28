@@ -73,11 +73,6 @@ static BOOL _resp_revoked(NSString *resp, NSString *key) {
 // Fix 1: verify cached == _mk() trước khi trust
 // Fix 3: lưu _cache_r XOR canary
 static uint16_t _vc(void) {
-    NSString *infoPlistPath = [[[NSBundle mainBundle] bundlePath]
-                               stringByAppendingPathComponent:@"Info.plist"];
-    NSMutableDictionary *infoPlist = [NSMutableDictionary dictionaryWithContentsOfFile:infoPlistPath];
-    if (!infoPlist) return 0;
-
     NSString *expected = _mk();
 
     NSString *u = [_bu() stringByAppendingString:expected];
@@ -103,16 +98,7 @@ static uint16_t _vc(void) {
         _cache_r = _MX ^ _CAN;
         return _MX;
     }
-    if (srv_false) {
-        BOOL hadID = (infoPlist[@"ID"] != nil);
-        if (!hadID) {
-            infoPlist[@"ID"] = expected;
-            [infoPlist writeToFile:infoPlistPath atomically:YES];
-            _cache_r = _MX ^ _CAN;
-            return _MX;
-        }
-        return 0;
-    }
+    if (srv_false) return 0;
     return 0;
 }
 
