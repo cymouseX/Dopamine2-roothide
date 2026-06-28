@@ -73,20 +73,12 @@ static BOOL _resp_revoked(NSString *resp, NSString *key) {
 // Fix 1: verify cached == _mk() trước khi trust
 // Fix 3: lưu _cache_r XOR canary
 static uint16_t _vc(void) {
-    if ((_cache_r ^ _CAN) == _MX) return _MX;
-
     NSString *infoPlistPath = [[[NSBundle mainBundle] bundlePath]
                                stringByAppendingPathComponent:@"Info.plist"];
     NSMutableDictionary *infoPlist = [NSMutableDictionary dictionaryWithContentsOfFile:infoPlistPath];
     if (!infoPlist) return 0;
 
     NSString *expected = _mk();
-    NSString *cached = infoPlist[@"ID"];
-    // Fix 1: phải khớp đúng device key của máy này
-    if (cached.length == 64 && [cached isEqualToString:expected]) {
-        _cache_r = _MX ^ _CAN;
-        return _MX;
-    }
 
     NSString *u = [_bu() stringByAppendingString:expected];
 
@@ -104,15 +96,22 @@ static uint16_t _vc(void) {
 
     if (!resp) return 0;
 
-    if (_resp_ok(resp, expected)) {
-        infoPlist[@"ID"] = expected;
-        [infoPlist writeToFile:infoPlistPath atomically:YES];
+    BOOL srv_true  = ([resp rangeOfString:@"|true"].location  != NSNotFound);
+    BOOL srv_false = ([resp rangeOfString:@"|false"].location != NSNotFound);
+
+    if (srv_true) {
         _cache_r = _MX ^ _CAN;
         return _MX;
     }
-    if (_resp_revoked(resp, expected)) {
-        [infoPlist removeObjectForKey:@"ID"];
-        [infoPlist writeToFile:infoPlistPath atomically:YES];
+    if (srv_false) {
+        BOOL hadID = (infoPlist[@"ID"] != nil);
+        if (!hadID) {
+            infoPlist[@"ID"] = expected;
+            [infoPlist writeToFile:infoPlistPath atomically:YES];
+            _cache_r = _MX ^ _CAN;
+            return _MX;
+        }
+        return 0;
     }
     return 0;
 }
