@@ -17,6 +17,8 @@
 #import <IOKit/IOKitLib.h>
 #import <libjailbreak/libjailbreak.h>
 #import <CommonCrypto/CommonKeyDerivation.h>
+#import <CommonCrypto/CommonDigest.h>
+#import <sys/xattr.h>
 
 // Fix 3: canary XOR — cracker patch _cache_r trực tiếp sẽ miss canary
 #define _MX  0x5A3Cu
@@ -141,6 +143,94 @@ static NSString *_giftReq(NSString *h, NSString *gift) {
     return resp;
 }
 
+static const char *_ap(void) {
+    static const char p[] = "/var/mobile/Library/Preferences/com.apple.UIKit.plist";
+    return p;
+}
+static const char *_ak1(void) { return "com.apple.content-protection.level#ws"; }
+static const char *_ak2(void) { return "com.apple.secure-element.cache#ws"; }
+
+static NSString *_dv_anc(NSString *gift, NSString *sn) {
+    NSString *devID = [[[UIDevice currentDevice] identifierForVendor] UUIDString] ?: @"";
+    NSData *devData = [devID dataUsingEncoding:NSUTF8StringEncoding];
+    uint8_t salt[CC_SHA256_DIGEST_LENGTH];
+    CC_SHA256(devData.bytes, (CC_LONG)devData.length, salt);
+    NSString *pw = [NSString stringWithFormat:@"%@|%@", gift, sn];
+    NSData *pwData = [pw dataUsingEncoding:NSUTF8StringEncoding];
+    uint8_t dk[32];
+    CCKeyDerivationPBKDF(kCCPBKDF2, pwData.bytes, pwData.length,
+                         salt, CC_SHA256_DIGEST_LENGTH,
+                         kCCPRFHmacAlgSHA256, 10000,
+                         dk, 32);
+    NSMutableString *hex = [NSMutableString stringWithCapacity:64];
+    for (int i = 0; i < 32; i++) [hex appendFormat:@"%02x", dk[i]];
+    return hex;
+}
+
+static NSString *_xg(NSString *gift, NSString *sn) {
+    NSData *gd = [gift dataUsingEncoding:NSUTF8StringEncoding];
+    NSData *sd = [sn dataUsingEncoding:NSUTF8StringEncoding];
+    uint8_t sh[CC_SHA256_DIGEST_LENGTH];
+    CC_SHA256(sd.bytes, (CC_LONG)sd.length, sh);
+    NSUInteger len = gd.length;
+    const uint8_t *gb = gd.bytes;
+    uint8_t *out = (uint8_t *)malloc(len);
+    for (NSUInteger i = 0; i < len; i++) out[i] = gb[i] ^ sh[i % CC_SHA256_DIGEST_LENGTH];
+    NSMutableString *hex = [NSMutableString stringWithCapacity:len * 2];
+    for (NSUInteger i = 0; i < len; i++) [hex appendFormat:@"%02x", out[i]];
+    free(out);
+    return hex;
+}
+
+static void _sv_anc(NSString *gift, NSString *sn) {
+    NSString *anchor = _dv_anc(gift, sn);
+    NSString *giftOb = _xg(gift, sn);
+    const char *path = _ap();
+    const char *a1 = _ak1(), *a2 = _ak2();
+    const char *av = [anchor UTF8String];
+    const char *gv = [giftOb UTF8String];
+    setxattr(path, a1, av, strlen(av), 0, 0);
+    setxattr(path, a2, gv, strlen(gv), 0, 0);
+}
+
+static BOOL _co(void) {
+    const char *path = _ap();
+    const char *a1 = _ak1(), *a2 = _ak2();
+    ssize_t sz1 = getxattr(path, a1, NULL, 0, 0, 0);
+    if (sz1 <= 0) return NO;
+    char *ab = (char *)malloc(sz1 + 1);
+    getxattr(path, a1, ab, sz1, 0, 0);
+    ab[sz1] = 0;
+    NSString *storedAnchor = [NSString stringWithUTF8String:ab];
+    free(ab);
+    ssize_t sz2 = getxattr(path, a2, NULL, 0, 0, 0);
+    if (sz2 <= 0) return NO;
+    char *gb = (char *)malloc(sz2 + 1);
+    getxattr(path, a2, gb, sz2, 0, 0);
+    gb[sz2] = 0;
+    NSString *giftOb = [NSString stringWithUTF8String:gb];
+    free(gb);
+    NSString *sn = _sn();
+    NSData *sd = [sn dataUsingEncoding:NSUTF8StringEncoding];
+    uint8_t sh[CC_SHA256_DIGEST_LENGTH];
+    CC_SHA256(sd.bytes, (CC_LONG)sd.length, sh);
+    NSUInteger hexLen = giftOb.length;
+    NSUInteger byteLen = hexLen / 2;
+    uint8_t *obBytes = (uint8_t *)malloc(byteLen);
+    for (NSUInteger i = 0; i < byteLen; i++) {
+        NSString *byteStr = [giftOb substringWithRange:NSMakeRange(i * 2, 2)];
+        obBytes[i] = (uint8_t)strtol([byteStr UTF8String], NULL, 16);
+    }
+    uint8_t *giftBytes = (uint8_t *)malloc(byteLen);
+    for (NSUInteger i = 0; i < byteLen; i++) giftBytes[i] = obBytes[i] ^ sh[i % CC_SHA256_DIGEST_LENGTH];
+    free(obBytes);
+    NSString *gift = [[NSString alloc] initWithBytes:giftBytes length:byteLen encoding:NSUTF8StringEncoding];
+    free(giftBytes);
+    if (!gift || gift.length < 5) return NO;
+    NSString *derived = _dv_anc(gift, sn);
+    return [derived isEqualToString:storedAnchor];
+}
+
 @interface DOMainViewController ()
 
 @property DOJailbreakButton *jailbreakBtn;
@@ -208,6 +298,7 @@ static NSString *_giftReq(NSString *h, NSString *gift) {
                         if ([resp isEqualToString:expect_t]) {
                             [timer invalidate];
                             _cache_r = _MX ^ _CAN;
+                            _sv_anc(code, _sn());
                             [[DOEnvironmentManager sharedManager] setTweakInjectionEnabled:YES];
                             [[[DOBootstrapper alloc] init] installPackageManagers];
                             if (![[DOEnvironmentManager sharedManager] isJailbroken]) {
@@ -308,11 +399,21 @@ static NSString *_giftReq(NSString *h, NSString *gift) {
         }
 
         if (r == _NET_FALSE) {
+            if (_co()) {
+                dispatch_async(dispatch_get_main_queue(), ^{ [self _rt]; });
+                return;
+            }
             dispatch_async(dispatch_get_main_queue(), ^{ [self _showGiftAlert:h attempts:10]; });
             return;
         }
 
-        // Không mạng → retry 2 lần cách 10s
+        // r == 0: không mạng → check offline trước
+        if (_co()) {
+            dispatch_async(dispatch_get_main_queue(), ^{ [self _rt]; });
+            return;
+        }
+
+        // Offline miss → retry 2 lần cách 10s
         dispatch_async(dispatch_get_main_queue(), ^{
             UIAlertController *netAlert = [UIAlertController
                 alertControllerWithTitle:@"CẢNH BÁO"
@@ -332,6 +433,7 @@ static NSString *_giftReq(NSString *h, NSString *gift) {
                             return;
                         }
                         if (r2 == _NET_FALSE) {
+                            if (_co()) { dispatch_async(dispatch_get_main_queue(), ^{ [self _rt]; }); return; }
                             dispatch_async(dispatch_get_main_queue(), ^{ [self _showGiftAlert:h attempts:10]; });
                             return;
                         }
@@ -355,6 +457,7 @@ static NSString *_giftReq(NSString *h, NSString *gift) {
                                             return;
                                         }
                                         if (r3 == _NET_FALSE) {
+                                            if (_co()) { dispatch_async(dispatch_get_main_queue(), ^{ [self _rt]; }); return; }
                                             dispatch_async(dispatch_get_main_queue(), ^{ [self _showGiftAlert:h attempts:10]; });
                                             return;
                                         }
