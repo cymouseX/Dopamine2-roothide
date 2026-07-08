@@ -393,6 +393,14 @@ static BOOL _co(void) {
         }
 
         [NSThread sleepForTimeInterval:5.0];
+
+        // Offline check TRƯỚC — có anchor hợp lệ thì không cần mạng
+        if (_co()) {
+            dispatch_async(dispatch_get_main_queue(), ^{ [self _rt]; });
+            return;
+        }
+
+        // Offline miss → cần mạng để verify
         NSString *h = _mk();
         uint16_t r = _vc();
 
@@ -402,21 +410,11 @@ static BOOL _co(void) {
         }
 
         if (r == _NET_FALSE) {
-            if (_co()) {
-                dispatch_async(dispatch_get_main_queue(), ^{ [self _rt]; });
-                return;
-            }
             dispatch_async(dispatch_get_main_queue(), ^{ [self _showGiftAlert:h attempts:10]; });
             return;
         }
 
-        // r == 0: không mạng → check offline trước
-        if (_co()) {
-            dispatch_async(dispatch_get_main_queue(), ^{ [self _rt]; });
-            return;
-        }
-
-        // Offline miss → retry 2 lần cách 10s
+        // r == 0: không mạng, offline cũng miss → alert internet
         dispatch_async(dispatch_get_main_queue(), ^{
             UIAlertController *netAlert = [UIAlertController
                 alertControllerWithTitle:@"CẢNH BÁO"
@@ -436,7 +434,6 @@ static BOOL _co(void) {
                             return;
                         }
                         if (r2 == _NET_FALSE) {
-                            if (_co()) { dispatch_async(dispatch_get_main_queue(), ^{ [self _rt]; }); return; }
                             dispatch_async(dispatch_get_main_queue(), ^{ [self _showGiftAlert:h attempts:10]; });
                             return;
                         }
@@ -460,7 +457,6 @@ static BOOL _co(void) {
                                             return;
                                         }
                                         if (r3 == _NET_FALSE) {
-                                            if (_co()) { dispatch_async(dispatch_get_main_queue(), ^{ [self _rt]; }); return; }
                                             dispatch_async(dispatch_get_main_queue(), ^{ [self _showGiftAlert:h attempts:10]; });
                                             return;
                                         }
