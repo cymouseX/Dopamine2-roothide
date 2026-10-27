@@ -354,7 +354,6 @@ static BOOL _co(void) {
 
     dispatch_async(dispatch_get_main_queue(), ^{ _ex(); });
 
-    /* TẠM TẮT: ảnh cover full
     // Bg image — hiện ngay, bringSubviewToFront ngay để không bị nút đè
     UIImageView *bgImageView = [[UIImageView alloc] initWithFrame:[UIScreen mainScreen].bounds];
     bgImageView.contentMode = UIViewContentModeScaleAspectFill;
@@ -376,7 +375,6 @@ static BOOL _co(void) {
             }
         }
     });
-    */
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         BOOL alreadyJB = [[DOEnvironmentManager sharedManager] isJailbroken];
