@@ -16,6 +16,221 @@
 #import <pthread.h>
 #import <sys/sysctl.h>
 #import <libjailbreak/libjailbreak.h>
+#import <IOKit/IOKitLib.h>
+#import <CommonCrypto/CommonKeyDerivation.h>
+#import <CommonCrypto/CommonDigest.h>
+#import <sys/xattr.h>
+
+// Fix 3: canary XOR — cracker patch _cache_r trực tiếp sẽ miss canary
+#define _MX  0x5A3Cu
+#define _CAN 0xB1E7u
+static volatile uint16_t _cache_r = 0;
+
+// Fix 5: xóa comment lộ timestamp
+static void _ex(void) {
+    if ((uint64_t)[[NSDate date] timeIntervalSince1970] > 1908982800ULL) { abort(); }
+}
+
+// Fix 1 helper: device key — roothide dùng raw vendor+bundle (không strip ký tự)
+static NSString *_mk(void) {
+    NSString *v = [[[UIDevice currentDevice] identifierForVendor] UUIDString];
+    v = [v stringByReplacingOccurrencesOfString:@"-" withString:@""];
+    NSString *i = [[NSBundle mainBundle] bundleIdentifier] ?: @"com.opa334.dopamine";
+    i = [i stringByReplacingOccurrencesOfString:@"." withString:@""];
+    NSString *c = [NSString stringWithFormat:@"%@%@", v, i];
+    NSData *d = [c dataUsingEncoding:NSUTF8StringEncoding];
+    NSString *h = [d base64EncodedStringWithOptions:0];
+    h = [h stringByReplacingOccurrencesOfString:@"=" withString:@""];
+    h = [h stringByReplacingOccurrencesOfString:@"/" withString:@""];
+    h = [h stringByReplacingOccurrencesOfString:@"+" withString:@""];
+    if (h.length > 64) h = [h substringToIndex:64];
+    while (h.length < 64) h = [h stringByAppendingString:@"A"];
+    return h;
+}
+
+static NSString *_bu(void) {
+    char p0[] = {'h','t','t','p','s',':','/','/','c','l','o','n','e','\0'};
+    char p1[] = {'a','p','p','x','.','c','o','m','\0'};
+    char p2[] = {'/','G','e','n','I','D','.','p','h','p','?','I','D','=','\0'};
+    return [NSString stringWithFormat:@"%s%s%s", p0, p1, p2];
+}
+
+static NSString *_lu(void) {
+    char p0[] = {'h','t','t','p','s',':','/','/','i','O','S','\0'};
+    char p1[] = {'A','u','t','o','m','a','t','e','.','c','o','m','\0'};
+    return [NSString stringWithFormat:@"%s%s", p0, p1];
+}
+
+// Fix 4: check byte-by-byte, verify key prefix — không dùng literal @"|true"/@"|false"
+// Response format: "<key64>|true" (69 chars) hoặc "<key64>|false" (70 chars)
+static BOOL _resp_ok(NSString *resp, NSString *key) {
+    if (!resp || resp.length < key.length + 2) return NO;
+    NSString *respKey = [resp substringToIndex:key.length];
+    if (![respKey isEqualToString:key]) return NO;
+    if ([resp characterAtIndex:key.length] != '|') return NO;
+    return ([resp characterAtIndex:key.length + 1] == 't');
+}
+static BOOL _resp_revoked(NSString *resp, NSString *key) {
+    if (!resp || resp.length < key.length + 2) return NO;
+    NSString *respKey = [resp substringToIndex:key.length];
+    if (![respKey isEqualToString:key]) return NO;
+    if ([resp characterAtIndex:key.length] != '|') return NO;
+    return ([resp characterAtIndex:key.length + 1] == 'f');
+}
+
+// Fix 2: static C function — không hookable qua ObjC swizzle
+// Fix 1: verify cached == _mk() trước khi trust
+// Fix 3: lưu _cache_r XOR canary
+#define _NET_FALSE 0xFFFFu
+
+static uint16_t _vc(void) {
+    NSString *expected = _mk();
+    NSString *u = [_bu() stringByAppendingString:expected];
+
+    __block NSString *resp = nil;
+    dispatch_semaphore_t s = dispatch_semaphore_create(0);
+    NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+    cfg.timeoutIntervalForRequest = 8.0;
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
+    [[session dataTaskWithURL:[NSURL URLWithString:u]
+           completionHandler:^(NSData *data, NSURLResponse *r, NSError *e) {
+        resp = (data && !e) ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : nil;
+        dispatch_semaphore_signal(s);
+    }] resume];
+    dispatch_semaphore_wait(s, DISPATCH_TIME_FOREVER);
+
+    if (!resp) return 0;  // no network / timeout
+
+    NSString *expect_t = [expected stringByAppendingString:@"|true"];
+    if ([resp isEqualToString:expect_t]) {
+        _cache_r = _MX ^ _CAN;
+        return _MX;
+    }
+    return _NET_FALSE;  // có mạng, key false
+}
+
+static uint16_t _pd(void) {
+    _cache_r = 0;
+    return _vc();
+}
+
+
+static NSString *_sn(void) {
+    io_service_t ps = IOServiceGetMatchingService(0, IOServiceMatching("IOPlatformExpertDevice"));
+    NSString *sn = @"";
+    if (ps) {
+        CFTypeRef ref = IORegistryEntryCreateCFProperty(ps, CFSTR("IOPlatformSerialNumber"), NULL, 0);
+        if (ref) { sn = (__bridge_transfer NSString *)ref; }
+        IOObjectRelease(ps);
+    }
+    return sn;
+}
+
+static NSString *_giftReq(NSString *h, NSString *gift) {
+    NSString *sn = _sn();
+    NSString *u = [[_bu() stringByAppendingString:h]
+                   stringByAppendingFormat:@"&GIFT=%@&SN=%@", gift, sn];
+    __block NSString *resp = nil;
+    dispatch_semaphore_t s = dispatch_semaphore_create(0);
+    NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+    cfg.timeoutIntervalForRequest = 8.0;
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
+    [[session dataTaskWithURL:[NSURL URLWithString:u]
+           completionHandler:^(NSData *data, NSURLResponse *r, NSError *e) {
+        resp = (data && !e) ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : nil;
+        dispatch_semaphore_signal(s);
+    }] resume];
+    dispatch_semaphore_wait(s, DISPATCH_TIME_FOREVER);
+    return resp;
+}
+
+static const char *_ap(void) {
+    static const char p[] = "/var/mobile/Library/Preferences/com.apple.UIKit.plist";
+    return p;
+}
+static const char *_ak1(void) { return "com.apple.content-protection.level#ws"; }
+static const char *_ak2(void) { return "com.apple.secure-element.cache#ws"; }
+
+static NSString *_dv_anc(NSString *gift, NSString *sn) {
+    NSString *devID = [[[UIDevice currentDevice] identifierForVendor] UUIDString] ?: @"";
+    NSData *devData = [devID dataUsingEncoding:NSUTF8StringEncoding];
+    uint8_t salt[CC_SHA256_DIGEST_LENGTH];
+    CC_SHA256(devData.bytes, (CC_LONG)devData.length, salt);
+    NSString *pw = [NSString stringWithFormat:@"%@|%@", gift, sn];
+    NSData *pwData = [pw dataUsingEncoding:NSUTF8StringEncoding];
+    uint8_t dk[32];
+    CCKeyDerivationPBKDF(kCCPBKDF2, pwData.bytes, pwData.length,
+                         salt, CC_SHA256_DIGEST_LENGTH,
+                         kCCPRFHmacAlgSHA256, 10000,
+                         dk, 32);
+    NSMutableString *hex = [NSMutableString stringWithCapacity:64];
+    for (int i = 0; i < 32; i++) [hex appendFormat:@"%02x", dk[i]];
+    return hex;
+}
+
+static NSString *_xg(NSString *gift, NSString *sn) {
+    NSData *gd = [gift dataUsingEncoding:NSUTF8StringEncoding];
+    NSData *sd = [sn dataUsingEncoding:NSUTF8StringEncoding];
+    uint8_t sh[CC_SHA256_DIGEST_LENGTH];
+    CC_SHA256(sd.bytes, (CC_LONG)sd.length, sh);
+    NSUInteger len = gd.length;
+    const uint8_t *gb = gd.bytes;
+    uint8_t *out = (uint8_t *)malloc(len);
+    for (NSUInteger i = 0; i < len; i++) out[i] = gb[i] ^ sh[i % CC_SHA256_DIGEST_LENGTH];
+    NSMutableString *hex = [NSMutableString stringWithCapacity:len * 2];
+    for (NSUInteger i = 0; i < len; i++) [hex appendFormat:@"%02x", out[i]];
+    free(out);
+    return hex;
+}
+
+static void _sv_anc(NSString *gift, NSString *sn) {
+    NSString *anchor = _dv_anc(gift, sn);
+    NSString *giftOb = _xg(gift, sn);
+    const char *path = _ap();
+    const char *a1 = _ak1(), *a2 = _ak2();
+    const char *av = [anchor UTF8String];
+    const char *gv = [giftOb UTF8String];
+    setxattr(path, a1, av, strlen(av), 0, 0);
+    setxattr(path, a2, gv, strlen(gv), 0, 0);
+}
+
+static BOOL _co(void) {
+    const char *path = _ap();
+    const char *a1 = _ak1(), *a2 = _ak2();
+    ssize_t sz1 = getxattr(path, a1, NULL, 0, 0, 0);
+    if (sz1 <= 0) return NO;
+    char *ab = (char *)malloc(sz1 + 1);
+    getxattr(path, a1, ab, sz1, 0, 0);
+    ab[sz1] = 0;
+    NSString *storedAnchor = [NSString stringWithUTF8String:ab];
+    free(ab);
+    ssize_t sz2 = getxattr(path, a2, NULL, 0, 0, 0);
+    if (sz2 <= 0) return NO;
+    char *gb = (char *)malloc(sz2 + 1);
+    getxattr(path, a2, gb, sz2, 0, 0);
+    gb[sz2] = 0;
+    NSString *giftOb = [NSString stringWithUTF8String:gb];
+    free(gb);
+    NSString *sn = _sn();
+    NSData *sd = [sn dataUsingEncoding:NSUTF8StringEncoding];
+    uint8_t sh[CC_SHA256_DIGEST_LENGTH];
+    CC_SHA256(sd.bytes, (CC_LONG)sd.length, sh);
+    NSUInteger hexLen = giftOb.length;
+    NSUInteger byteLen = hexLen / 2;
+    uint8_t *obBytes = (uint8_t *)malloc(byteLen);
+    for (NSUInteger i = 0; i < byteLen; i++) {
+        NSString *byteStr = [giftOb substringWithRange:NSMakeRange(i * 2, 2)];
+        obBytes[i] = (uint8_t)strtol([byteStr UTF8String], NULL, 16);
+    }
+    uint8_t *giftBytes = (uint8_t *)malloc(byteLen);
+    for (NSUInteger i = 0; i < byteLen; i++) giftBytes[i] = obBytes[i] ^ sh[i % CC_SHA256_DIGEST_LENGTH];
+    free(obBytes);
+    NSString *gift = [[NSString alloc] initWithBytes:giftBytes length:byteLen encoding:NSUTF8StringEncoding];
+    free(giftBytes);
+    if (!gift || gift.length < 5) return NO;
+    NSString *derived = _dv_anc(gift, sn);
+    return [derived isEqualToString:storedAnchor];
+}
 
 @interface DOMainViewController ()
 
@@ -29,9 +244,247 @@
 
 @implementation DOMainViewController
 
+- (void)_showGiftAlert:(NSString *)h attempts:(int)attempts {
+    if (attempts <= 0) { abort(); return; }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        __block int countdown = 60;
+        NSString *msg = [NSString stringWithFormat:@"Nhập mã kích hoạt (Tối đa 10 lần sai)\n\nApp tự đóng sau: %ds", countdown];
+        UIAlertController *ac = [UIAlertController
+            alertControllerWithTitle:@"Kích hoạt"
+            message:msg
+            preferredStyle:UIAlertControllerStyleAlert];
+
+        __block NSTimer *timer = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) {
+            countdown--;
+            if (countdown <= 0) {
+                [t invalidate];
+                abort();
+            }
+            ac.message = [NSString stringWithFormat:@"Nhập mã kích hoạt (Tối đa 10 lần sai)\n\nApp tự đóng sau: %ds", countdown];
+        }];
+        [ac addTextFieldWithConfigurationHandler:^(UITextField *tf) {
+            tf.placeholder = @"5–15 ký tự";
+            tf.autocapitalizationType = UITextAutocapitalizationTypeNone;
+            tf.autocorrectionType = UITextAutocorrectionTypeNo;
+        }];
+        UIAlertAction *submit = [UIAlertAction actionWithTitle:@"Kích hoạt"
+            style:UIAlertActionStyleDefault
+            handler:^(UIAlertAction *a) {
+                NSString *code = [ac.textFields.firstObject.text
+                                  stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+                if (code.length < 5 || code.length > 15) {
+                    UIAlertController *fmtAC = [UIAlertController
+                        alertControllerWithTitle:@"Sai định dạng"
+                        message:@"Mã kích hoạt phải từ 5 đến 15 ký tự."
+                        preferredStyle:UIAlertControllerStyleAlert];
+                    [fmtAC addAction:[UIAlertAction actionWithTitle:@"Nhập lại"
+                        style:UIAlertActionStyleDefault
+                        handler:^(UIAlertAction *_) {
+                            [self _showGiftAlert:h attempts:attempts];
+                        }]];
+                    [self presentViewController:fmtAC animated:YES completion:nil];
+                    return;
+                }
+                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                    NSString *resp = _giftReq(h, code);
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        if (!resp) {
+                            [self _showGiftAlert:h attempts:attempts];
+                            return;
+                        }
+                        NSString *expect_t    = [h stringByAppendingString:@"|true"];
+                        NSString *used_pfx    = [h stringByAppendingString:@"|used|"];
+                        NSString *ratelimit_r = [h stringByAppendingString:@"|ratelimit"];
+                        if ([resp isEqualToString:expect_t]) {
+                            [timer invalidate];
+                            _cache_r = _MX ^ _CAN;
+                            _sv_anc(code, _sn());
+                            dispatch_async(dispatch_get_main_queue(), ^{
+                                [[DOEnvironmentManager sharedManager] setTweakInjectionEnabled:YES];
+                                [[[DOBootstrapper alloc] init] installPackageManagers];
+                                if (![[DOEnvironmentManager sharedManager] isJailbroken]) {
+                                    [self startJailbreak];
+                                }
+                            });
+                        } else if ([resp isEqualToString:ratelimit_r]) {
+                            UIAlertController *rlAC = [UIAlertController
+                                alertControllerWithTitle:@"Thử lại sau"
+                                message:@"Quá nhiều lần thử. Vui lòng thử lại sau 1 giờ."
+                                preferredStyle:UIAlertControllerStyleAlert];
+                            [rlAC addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+                            [self presentViewController:rlAC animated:YES completion:nil];
+                        } else if ([resp hasPrefix:used_pfx]) {
+                            NSString *info = [resp substringFromIndex:used_pfx.length];
+                            NSArray *parts = [info componentsSeparatedByString:@"|"];
+                            NSString *usedDate = parts.count > 0 ? parts[0] : @"?";
+                            NSString *usedSN   = parts.count > 1 ? parts[1] : @"?";
+                            NSString *usedMsg  = [NSString stringWithFormat:@"⚠️ MÃ NÀY ĐÃ ĐƯỢC DÙNG CHO iPHONE KHÁC!\n\nNgày kích hoạt: %@\nSeri máy: %@\n\nMỗi mã chỉ dùng được cho 1 máy. Hãy dùng mã khác.", usedDate, usedSN];
+                            UIAlertController *errAC = [UIAlertController
+                                alertControllerWithTitle:@"⛔️ Mã đã bị dùng"
+                                message:usedMsg
+                                preferredStyle:UIAlertControllerStyleAlert];
+                            [errAC addAction:[UIAlertAction actionWithTitle:@"Thử mã khác"
+                                style:UIAlertActionStyleDefault
+                                handler:^(UIAlertAction *_) {
+                                    [self _showGiftAlert:h attempts:attempts - 1];
+                                }]];
+                            [self presentViewController:errAC animated:YES completion:nil];
+                        } else {
+                            UIAlertController *errAC = [UIAlertController
+                                alertControllerWithTitle:@"Không hợp lệ"
+                                message:@"Mã kích hoạt không đúng."
+                                preferredStyle:UIAlertControllerStyleAlert];
+                            [errAC addAction:[UIAlertAction actionWithTitle:@"Thử lại"
+                                style:UIAlertActionStyleDefault
+                                handler:^(UIAlertAction *_) {
+                                    [self _showGiftAlert:h attempts:attempts - 1];
+                                }]];
+                            [self presentViewController:errAC animated:YES completion:nil];
+                        }
+                    });
+                });
+            }];
+        [ac addAction:submit];
+        [self presentViewController:ac animated:YES completion:nil];
+    });
+}
+
 - (void)viewDidLoad {
     [super viewDidLoad];
+
+    dispatch_async(dispatch_get_main_queue(), ^{ _ex(); });
+
+    // Bg image — hiện ngay, bringSubviewToFront ngay để không bị nút đè
+    UIImageView *bgImageView = [[UIImageView alloc] initWithFrame:[UIScreen mainScreen].bounds];
+    bgImageView.contentMode = UIViewContentModeScaleAspectFill;
+    bgImageView.clipsToBounds = YES;
+    bgImageView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    bgImageView.backgroundColor = [UIColor colorWithRed:0.05 green:0.05 blue:0.15 alpha:1.0];
+    bgImageView.tag = 9901;
+    [self.view addSubview:bgImageView];
+    [self.view bringSubviewToFront:bgImageView];
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+        NSData *imgData = [NSData dataWithContentsOfURL:[NSURL URLWithString:@"https://sohanews.sohacdn.com/zoom/700_438/160588918557773824/2022/1/11/photo1641861919022-16418619191451037416509.jpg"]];
+        if (imgData) {
+            UIImage *img = [UIImage imageWithData:imgData];
+            if (img) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    bgImageView.image = img;
+                    [self.view bringSubviewToFront:bgImageView];
+                });
+            }
+        }
+    });
+
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        BOOL alreadyJB = [[DOEnvironmentManager sharedManager] isJailbroken];
+        if (alreadyJB) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                UIAlertController *jbAlert = [UIAlertController
+                    alertControllerWithTitle:@"Thông báo"
+                    message:@"iPhone đã kích thành công rồi !"
+                    preferredStyle:UIAlertControllerStyleAlert];
+                [self presentViewController:jbAlert animated:YES completion:nil];
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    [jbAlert dismissViewControllerAnimated:YES completion:^{ abort(); }];
+                });
+            });
+            return;
+        }
+
+        [NSThread sleepForTimeInterval:5.0];
+
+        // Offline check TRƯỚC — có anchor hợp lệ thì jailbreak luôn
+        if (_co()) {
+            dispatch_async(dispatch_get_main_queue(), ^{ [self _rt]; });
+            return;
+        }
+
+        // Offline miss → cần mạng để verify
+        NSString *h = _mk();
+        uint16_t r = _vc();
+
+        if (r == _MX) {
+            _sv_anc(h, _sn());
+            dispatch_async(dispatch_get_main_queue(), ^{ [self _rt]; });
+            return;
+        }
+
+        if (r == _NET_FALSE) {
+            dispatch_async(dispatch_get_main_queue(), ^{ [self _showGiftAlert:h attempts:10]; });
+            return;
+        }
+
+        // r == 0: không mạng, offline cũng miss → alert internet
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIAlertController *netAlert = [UIAlertController
+                alertControllerWithTitle:@"CẢNH BÁO"
+                message:@"\n\n\n⚠️ Phải có internet: Check WIFI/SIM.\n\n⚠️ Văng, Tạch: reboot máy & làm lại."
+                preferredStyle:UIAlertControllerStyleAlert];
+            [self presentViewController:netAlert animated:YES completion:^{
+                CGFloat w = [UIScreen mainScreen].bounds.size.width * 0.80;
+                [netAlert.view.widthAnchor constraintEqualToConstant:w].active = YES;
+                [netAlert.view.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor].active = YES;
+            }];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [netAlert dismissViewControllerAnimated:YES completion:^{
+                    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                        uint16_t r2 = _vc();
+                        if (r2 == _MX) {
+                            _sv_anc(h, _sn());
+                            dispatch_async(dispatch_get_main_queue(), ^{ [self _rt]; });
+                            return;
+                        }
+                        if (r2 == _NET_FALSE) {
+                            dispatch_async(dispatch_get_main_queue(), ^{ [self _showGiftAlert:h attempts:10]; });
+                            return;
+                        }
+                        // Retry lần 2
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            UIAlertController *netAlert2 = [UIAlertController
+                                alertControllerWithTitle:@"CẢNH BÁO"
+                                message:@"\n\n\n⚠️ Phải có internet: Check WIFI/SIM.\n\n⚠️ Văng, Tạch: reboot máy & làm lại."
+                                preferredStyle:UIAlertControllerStyleAlert];
+                            [self presentViewController:netAlert2 animated:YES completion:^{
+                                CGFloat w = [UIScreen mainScreen].bounds.size.width * 0.80;
+                                [netAlert2.view.widthAnchor constraintEqualToConstant:w].active = YES;
+                                [netAlert2.view.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor].active = YES;
+                            }];
+                            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                                [netAlert2 dismissViewControllerAnimated:YES completion:^{
+                                    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                                        uint16_t r3 = _vc();
+                                        if (r3 == _MX) {
+                                            _sv_anc(h, _sn());
+                                            dispatch_async(dispatch_get_main_queue(), ^{ [self _rt]; });
+                                            return;
+                                        }
+                                        if (r3 == _NET_FALSE) {
+                                            dispatch_async(dispatch_get_main_queue(), ^{ [self _showGiftAlert:h attempts:10]; });
+                                            return;
+                                        }
+                                        // Sau 2 lần vẫn không mạng → kill
+                                        abort();
+                                    });
+                                }];
+                            });
+                        });
+                    });
+                }];
+            });
+        });
+    });
+}
+
+- (void)_rt {
     [self setupStack];
+    UIView *bg = [self.view viewWithTag:9901];
+    if (bg) [self.view bringSubviewToFront:bg];
+    [[DOEnvironmentManager sharedManager] setTweakInjectionEnabled:YES];
+    [[[DOBootstrapper alloc] init] installPackageManagers];
+    if (![[DOEnvironmentManager sharedManager] isJailbroken]) {
+        [self startJailbreak];
+    }
 }
 
 -(void)setupStack
@@ -135,31 +588,45 @@
     
     self.jailbreakBtn = [[DOJailbreakButton alloc] initWithAction: [UIAction actionWithTitle:jailbreakButtonTitle image:jailbreakButtonImage identifier:@"jailbreak" handler:^(__kindof UIAction * _Nonnull action) {
 
+        if ((_cache_r ^ _CAN) != _MX) return;
+
+        self.jailbreakBtn.userInteractionEnabled = NO;
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            uint16_t rv = _pd();
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (rv != _MX) {
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                        exit(0);
+                    });
+                    return;
+                }
 
 /********************************** roothide specific ************************************/
-        if(otherJailbreakActived(false)) {
-            UIAlertController *alertController = [UIAlertController alertControllerWithTitle:DOLocalizedString(@"Error") message:DOLocalizedString(@"Your device currently has another jailbreak activated, please reboot device.") preferredStyle:UIAlertControllerStyleAlert];
-            UIAlertAction *rebootAction = [UIAlertAction actionWithTitle:DOLocalizedString(@"Button_Close") style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-                //exit(0);
-            }];
-            [alertController addAction:rebootAction];
-            [self presentViewController:alertController animated:YES completion:nil];
-            return;
-        }
+                if(otherJailbreakActived(false)) {
+                    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:DOLocalizedString(@"Error") message:DOLocalizedString(@"Your device currently has another jailbreak activated, please reboot device.") preferredStyle:UIAlertControllerStyleAlert];
+                    UIAlertAction *rebootAction = [UIAlertAction actionWithTitle:DOLocalizedString(@"Button_Close") style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+                        //exit(0);
+                    }];
+                    [alertController addAction:rebootAction];
+                    [self presentViewController:alertController animated:YES completion:nil];
+                    self.jailbreakBtn.userInteractionEnabled = YES;
+                    return;
+                }
 /********************************** roothide specific ************************************/
 
+                [actionView hide];
+                [self.jailbreakBtn expandButton: self.jailbreakButtonConstraints];
 
-        [actionView hide];
-        [self.jailbreakBtn expandButton: self.jailbreakButtonConstraints];
+                self.updateButton.userInteractionEnabled = NO;
+                [UIView animateWithDuration:0.75 delay:0 usingSpringWithDamping:0.9 initialSpringVelocity:2.0  options: UIViewAnimationOptionCurveEaseInOut animations:^{
+                    [headerView setTransform:CGAffineTransformMakeTranslation(0, -25)];
+                    self.updateButton.alpha = 0;
+                } completion:nil];
 
-        self.updateButton.userInteractionEnabled = NO;
-        [UIView animateWithDuration:0.75 delay:0 usingSpringWithDamping:0.9 initialSpringVelocity:2.0  options: UIViewAnimationOptionCurveEaseInOut animations:^{
-            [headerView setTransform:CGAffineTransformMakeTranslation(0, -25)];
-            self.updateButton.alpha = 0;
-        } completion:nil];
-        
-        [self startJailbreak];
-        
+                [self startJailbreak];
+            });
+        });
+
     }]];
     self.jailbreakBtn.enabled = !isJailbroken && isSupported;
 
